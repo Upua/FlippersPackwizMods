@@ -4,6 +4,7 @@ Description=GSR
 [Container]
 Image=gsr.build
 ContainerName=gsr
+StopTimeout=180
 PublishPort=25565:25565/tcp
 PublishPort=24454:24454/udp
 
