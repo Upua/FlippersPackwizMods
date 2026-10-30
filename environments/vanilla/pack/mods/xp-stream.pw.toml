@@ -1,0 +1,13 @@
+name = "XP Stream"
+filename = "xp_stream-fabric-26.3-1.1.8.jar"
+side = "both"
+
+[download]
+url = "https://cdn.modrinth.com/data/QZqv3OuH/versions/ZPMDuEBi/xp_stream-fabric-26.3-1.1.8.jar"
+hash-format = "sha512"
+hash = "68fd0af3027cfc961124c33fb7c50a4e3aa5d17a599a6076ec462b4f8cc14afbbe4c48c720adc39db8b3e75f48e317bd24d3eea2be8acf6d4f6ecc095e54a46a"
+
+[update]
+[update.modrinth]
+mod-id = "QZqv3OuH"
+version = "ZPMDuEBi"

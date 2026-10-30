@@ -1,6 +1,6 @@
 name = "MySkins"
 filename = "myskins-1.0.5.jar"
-side = "client"
+side = "both"
 
 [download]
 url = "https://cdn.modrinth.com/data/tYxs4T5F/versions/K2Jo445e/myskins-1.0.5.jar"

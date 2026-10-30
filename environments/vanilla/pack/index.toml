@@ -81,13 +81,8 @@ hash = "cae73ff170f38b18a2d5c9eab5a311ee13ab76d359afbcc9153a292e47607d82"
 metafile = true
 
 [[files]]
-file = "mods/distanthorizons.pw.toml"
-hash = "8cfd619edd7190fdd7f048bc7815193699d0583857f988e421b8e7816167ad25"
-metafile = true
-
-[[files]]
-file = "mods/dynamic-fps.pw.toml"
-hash = "84d6a2b87db74408c8fd2fd15792bad981ffbab43e1ee96b79aabded2604141c"
+file = "mods/deimos.pw.toml"
+hash = "514ec685212a8508ded63236cd1a9b2e222fee0609692a89bbbeed5fc402013a"
 metafile = true
 
 [[files]]
@@ -191,6 +186,11 @@ hash = "a8c2641bfbe4758d8d33f21b926f5cec48cb555becaded7cd6f0de2fc2bf0f91"
 metafile = true
 
 [[files]]
+file = "mods/lod-server-support.pw.toml"
+hash = "cf4c16d6c9ed94709abc6ce14ad00dc5237739cb0efccb00f55db70f98d285d8"
+metafile = true
+
+[[files]]
 file = "mods/malilib.pw.toml"
 hash = "aa19aaf146fb03f895583147e1906b950c9acc2c31a16110d3764401a65a79e1"
 metafile = true
@@ -198,6 +198,11 @@ metafile = true
 [[files]]
 file = "mods/modmenu.pw.toml"
 hash = "cd05db76d670773ace1184abdd46126e7b7c75c2b70da82e1764cff9544c4269"
+metafile = true
+
+[[files]]
+file = "mods/more-music-discs.pw.toml"
+hash = "ce70448eca39e7a11082138bb2b8887b1efd0d1f24c653a40206386704b89ef3"
 metafile = true
 
 [[files]]
@@ -212,7 +217,7 @@ metafile = true
 
 [[files]]
 file = "mods/myskins.pw.toml"
-hash = "d0518335f91eb76b10a515ec0c4ac911dc06f0dfc982bb108771c3c39203e986"
+hash = "b968908773c9cb0d5a561fd29257ff2432c79d38686f82659cd10c6f402a69b9"
 metafile = true
 
 [[files]]
@@ -271,6 +276,11 @@ hash = "d408535e60b1349460ace34a5dae1397151ce6e1de5209bd4d2a9a5d7aa0d120"
 metafile = true
 
 [[files]]
+file = "mods/simple-voice-chat.pw.toml"
+hash = "6865b44c30baa85a87c344ac9d3e0eb0135e90b26a90a6dc28bf79a363170cf9"
+metafile = true
+
+[[files]]
 file = "mods/skinrestorer.pw.toml"
 hash = "1fca038d9bb8b2921d3b45db8acef5282539a8675a6d9520869b27298ad874dc"
 metafile = true
@@ -301,6 +311,11 @@ hash = "d9d97625ca8e65c474f373012b72c02dc6b8bce909d5acc91561bc4e3d0cb705"
 metafile = true
 
 [[files]]
+file = "mods/voxy.pw.toml"
+hash = "19ae82550e2d7e5a444bb3c5c49777ecf6dfd6334e286ad499ca17235587d2ed"
+metafile = true
+
+[[files]]
 file = "mods/xaeros-maps-multiplayer-plus.pw.toml"
 hash = "1add40b6ee75d1e6c766ff0afc81208566615200169c88442219d77223a2cf4d"
 metafile = true
@@ -313,6 +328,11 @@ metafile = true
 [[files]]
 file = "mods/xaeros-world-map.pw.toml"
 hash = "6b25e967a58b4c60cd20267f0d05e630839eb4ddac780cbcb72e76b9e7bdc759"
+metafile = true
+
+[[files]]
+file = "mods/xp-stream.pw.toml"
+hash = "8e831e136fccc9a9e9834a8d81bacd92f44064dcb870f8fbad4d9a03a35b28dd"
 metafile = true
 
 [[files]]

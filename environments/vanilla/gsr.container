@@ -5,6 +5,7 @@ Description=GSR
 Image=gsr.build
 ContainerName=gsr
 PublishPort=25565:25565/tcp
+PublishPort=24454:24454/udp
 
 Environment=EULA=TRUE
 Environment=VERSION=26.3
