@@ -192,17 +192,20 @@ verify_snapshot() {
     archive="$snapshot/volume.tar.zst"
     checksum="$archive.sha256"
 
+    # Every step returns explicitly: this function is also called inside
+    # $(...), where bash does not inherit set -e, so a failed check must not
+    # fall through to a later successful command.
     [[ -f "$archive" && -f "$checksum" && -f "$snapshot/manifest.json" ]] || {
         fail "snapshot is incomplete: $snapshot"
         return 1
     }
     (
-        cd "$snapshot"
+        cd "$snapshot" &&
         sha256sum --check --status "volume.tar.zst.sha256"
-    )
-    zstd -tq "$archive"
-    zstd -dcq "$archive" | tar -tf - >/dev/null
-    python3 -m json.tool "$snapshot/manifest.json" >/dev/null
+    ) || { fail "checksum mismatch: $snapshot"; return 1; }
+    zstd -tq "$archive" || { fail "zstd test failed: $archive"; return 1; }
+    zstd -dcq "$archive" | tar -tf - >/dev/null || { fail "tar listing failed: $archive"; return 1; }
+    python3 -m json.tool "$snapshot/manifest.json" >/dev/null || { fail "invalid manifest: $snapshot"; return 1; }
 }
 
 verify_snapshot_environment() {
@@ -339,8 +342,10 @@ current_snapshot() {
     local current
 
     current="$(readlink -e "$BACKUP_DIR/current" 2>/dev/null || true)"
-    [[ -n "$current" && -d "$current" ]] || fail "no current backup for $BACKUP_ENVIRONMENT"
-    verify_snapshot "$current"
+    # Called as $(current_snapshot): set -e is not inherited there, so return
+    # explicitly instead of printing an unverified path.
+    [[ -n "$current" && -d "$current" ]] || { fail "no current backup for $BACKUP_ENVIRONMENT"; return 1; }
+    verify_snapshot "$current" || return 1
     printf '%s\n' "$current"
 }
 
