@@ -104,7 +104,15 @@ apply_master() {
   # podman cp preserves restrictive host modes. Minecraft itself runs as a
   # non-root user in the image, so make the already-copied file readable.
   podman exec --user 0 "$container" sh -lc 'chmod 644 /data/whitelist.json'
-  podman exec "$container" rcon-cli 'whitelist reload'
+  # Same persistent-credential lookup as gsr-backup/switch-environment.sh:
+  # with OVERRIDE_SERVER_PROPERTIES=FALSE the live rcon.password can differ
+  # from the image's generated rcon-cli default.
+  podman exec "$container" sh -ceu '
+    password="$(sed -n "s/^rcon.password=//p" /data/server.properties)"
+    [ -n "$password" ] || { echo "mc-whitelist: no rcon.password in /data/server.properties" >&2; exit 1; }
+    export RCON_PASSWORD="$password"
+    exec rcon-cli "$@"
+  ' sh 'whitelist reload'
   echo "Master whitelist applied to $container."
 }
 
