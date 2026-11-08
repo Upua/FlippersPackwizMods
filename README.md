@@ -11,7 +11,8 @@
   - Bootstrap script for both fresh installs and infrastructure updates
 - `gsr` is the single installed server command interface
 - `gsr whitelist` maintains one private whitelist for every environment
-- `gsr backup` keeps one verified full-volume backup per environment
+- `gsr backup` keeps verified full-volume backups per environment (one by
+  default, configurable)
 - Worlds, player data and runtime configuration remain separate per environment
 
 ## Environments
@@ -191,10 +192,56 @@ the volume, or the running server. A player who has not joined yet is reported
 as such rather than treated as an error. A different EasyAuth UUID is an error
 that must be investigated before any manual migration.
 
+## Backups and safety
+
+- **When a backup is made.** A planned stop, restart or switch through `gsr`
+  or systemd first runs `save-all flush` over RCON (`ExecStop`), then, once the
+  container has stopped, exports the whole `/data` volume (`ExecStopPost`).
+  If the flush fails or the environment was not running, no backup is made and
+  the previous one stays current. `gsr backup create` does the same for an
+  environment that is already stopped. `podman stop` bypasses all of this.
+- **What is checked.** A new archive becomes `current` only after its sha256,
+  `zstd -t`, a full tar listing and its manifest pass, and after it has been
+  flushed to disk. Only then are older snapshots removed. Commands that read a
+  backup (`verify`, `restore`, `restore-server`, and the pull client's
+  transfers) check it again first and refuse a damaged one.
+- **How many are kept.** By default one snapshot per environment is kept on
+  the server, so each stop replaces the previous backup. To keep more, create
+  `~/.config/gsr/backup.conf` on the server with one line:
+
+  ```text
+  GSR_SERVER_BACKUP_KEEP=3
+  ```
+
+  The value (1 to 999) counts all snapshots of one environment, `current`
+  included; each is a full compressed copy of the volume, so plan disk space
+  for that many. The setting is applied at the next successful backup, which
+  then removes the oldest snapshots beyond the limit. Without the file, or
+  with `GSR_SERVER_BACKUP_KEEP=1`, behaviour is exactly as before. Any other
+  content in that file (a typo, `0`, a non-number) makes every backup,
+  including the automatic stop backups, refuse to run and leave the existing
+  snapshots untouched; check `gsr backup verify <environment>` or the journal
+  after changing it. The `gsr backup` commands only use `current`; older
+  snapshots are kept under
+  `~/.local/share/gsr/backups/<environment>/snapshots/` and are not yet
+  selectable by a command.
+- **Restores.** `gsr backup restore` only imports into a new, separately named
+  volume. `gsr backup restore-server` (and `gsr-backup-pull restore-server`)
+  replace the live volume only after a typed `RESTORE-<environment>`
+  confirmation and a fresh rollback backup of the live volume. If the import
+  fails, the rollback backup is imported again and the environment stays
+  stopped. For `gsr backup restore-server` the protected copy of the restore
+  source is then kept and its path printed; for `gsr-backup-pull
+  restore-server` the source remains on the other computer.
+- **Off-server copies.** `scripts/bin/gsr-backup-pull` keeps its own number of
+  complete backups on another computer (see below). With the default server
+  setting it is the only way to keep older backups.
+
 ## Environment backups
 
-`gsr-backup` keeps exactly one verified, complete local backup for each
-environment under `~/.local/share/gsr/backups/`. It is outside the repository,
+`gsr-backup` keeps verified, complete local backups for each environment
+under `~/.local/share/gsr/backups/`: exactly one by default, or the number set
+by `GSR_SERVER_BACKUP_KEEP` (see above). It is outside the repository,
 so bootstrap and Git updates never replace it. It contains the whole Podman
 `/data` volume, including the world, player data, EasyAuth database, mods, and
 runtime configuration. The private shared whitelist source is copied alongside
@@ -202,8 +249,9 @@ it.
 
 Before a planned stop, restart, or environment switch, the service flushes the
 Minecraft save. After the container has stopped, its now-idle volume is
-exported, compressed with zstd, verified, and made current. The previous local
-backup is only removed after the new archive has passed its integrity checks.
+exported, compressed with zstd, verified, and made current. Older local
+backups beyond the retention setting are only removed after the new archive
+has passed its integrity checks.
 
 The normal server start always uses its live volume; a backup is never mounted
 automatically. Direct `podman stop` commands bypass this protection. Use `gsr`
@@ -226,8 +274,10 @@ it.
 `restore-server` is the explicit server-local rollback command. It asks for a
 confirmation, protects its source temporarily, creates a fresh backup of the
 currently live volume, then replaces the live volume and starts the environment
-again. The fresh server backup becomes the rollback point. Only one full backup
-is retained at rest; the duplicate source exists only while the restore runs.
+again. The fresh server backup becomes the rollback point. With the default
+retention only that one full backup is retained at rest; the duplicate source
+exists only while the restore runs (or after a failed restore, where it is
+kept and its path is printed).
 The saved `shared/` directory remains reference material and is not copied back
 automatically.
 

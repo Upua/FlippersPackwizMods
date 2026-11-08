@@ -8,6 +8,9 @@ DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
 BACKUP_ROOT="$DATA_HOME/gsr/backups"
 MARKER_ROOT="$STATE_HOME/gsr/backup-prepared"
+# Optional server-side settings. The only key is GSR_SERVER_BACKUP_KEEP.
+BACKUP_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/gsr/backup.conf"
+DEFAULT_SERVER_BACKUP_KEEP=1
 RESTORE_SOURCE_STAGE=""
 RESTORE_INCOMING_STAGE=""
 TEST_VOLUME=""
@@ -67,7 +70,9 @@ Transport helpers (used by gsr-backup-pull only):
 
 prepare and finalize are systemd stop hooks. create only exports an environment
 whose container is already stopped. Each environment keeps one verified local
-backup under ~/.local/share/gsr/backups/.
+backup under ~/.local/share/gsr/backups/ by default. To keep more, put
+GSR_SERVER_BACKUP_KEEP=<1-999> (the number of snapshots per environment,
+current included) in ~/.config/gsr/backup.conf.
 EOF
 }
 
@@ -250,18 +255,69 @@ print(f"{created}\t{value:.2f} {units[index]}")
 PY
 }
 
+# Prints GSR_SERVER_BACKUP_KEEP from $BACKUP_CONFIG, or the default (1) when
+# the file does not exist. Anything it does not understand is an error rather
+# than a silent fallback, so a typo cannot quietly change what is deleted.
+# Called inside $(...): every failure returns explicitly.
+server_backup_keep() {
+    local line value="" found=false line_number=0
+
+    if [[ ! -e "$BACKUP_CONFIG" ]]; then
+        printf '%s\n' "$DEFAULT_SERVER_BACKUP_KEEP"
+        return 0
+    fi
+    [[ -f "$BACKUP_CONFIG" && -r "$BACKUP_CONFIG" ]] || {
+        fail "cannot read $BACKUP_CONFIG"
+        return 1
+    }
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line_number=$((line_number + 1))
+        line="${line%%#*}"
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        if [[ "$line" =~ ^[[:space:]]*GSR_SERVER_BACKUP_KEEP[[:space:]]*=[[:space:]]*([^[:space:]]*)[[:space:]]*$ ]]; then
+            found=true
+            value="${BASH_REMATCH[1]}"
+        else
+            fail "$BACKUP_CONFIG line $line_number: expected GSR_SERVER_BACKUP_KEEP=<number>"
+            return 1
+        fi
+    done < "$BACKUP_CONFIG"
+
+    if [[ "$found" == false ]]; then
+        printf '%s\n' "$DEFAULT_SERVER_BACKUP_KEEP"
+        return 0
+    fi
+    [[ "$value" =~ ^[1-9][0-9]{0,2}$ ]] || {
+        fail "GSR_SERVER_BACKUP_KEEP in $BACKUP_CONFIG must be a whole number from 1 to 999, not '$value'"
+        return 1
+    }
+    printf '%s\n' "$value"
+}
+
+# Keeps $current plus the newest (keep - 1) other completed snapshots and
+# removes everything else in the snapshot directory, including leftover
+# staging directories. With keep=1 this removes every other directory.
 remove_old_snapshots() {
-    local current="$1" snapshot
+    local current="$1" keep="$2" snapshot kept=1
 
     while IFS= read -r -d '' snapshot; do
         [[ "$snapshot" == "$current" ]] && continue
+        # Snapshot names start with a UTC timestamp, so a reverse name sort
+        # visits the newest first.
+        if (( kept < keep )) && [[ "$(basename "$snapshot")" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9]+$ ]]; then
+            kept=$((kept + 1))
+            continue
+        fi
         rm -rf -- "$snapshot"
-    done < <(find "$SNAPSHOT_DIR" -mindepth 1 -maxdepth 1 -type d -print0)
+    done < <(find "$SNAPSHOT_DIR" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z -r)
 }
 
 create_backup() {
-    local allow_running="$1" created_at snapshot_id stage archive digest archive_size current_target
+    local allow_running="$1" created_at snapshot_id stage archive digest archive_size current_target keep
 
+    # Read the retention setting before exporting anything: an invalid value
+    # refuses the backup and leaves every existing snapshot untouched.
+    keep="$(server_backup_keep)" || return 1
     command -v zstd >/dev/null || fail "zstd is required for backups."
     command -v tar >/dev/null || fail "tar is required for backups."
     podman volume exists "$BACKUP_VOLUME" || fail "Podman volume does not exist: $BACKUP_VOLUME"
@@ -304,11 +360,15 @@ create_backup() {
     ln -sfnT "snapshots/$snapshot_id" "$BACKUP_DIR/.current.new"
     mv -Tf "$BACKUP_DIR/.current.new" "$BACKUP_DIR/current"
     sync -- "$SNAPSHOT_DIR" "$BACKUP_DIR"
-    remove_old_snapshots "$stage"
+    remove_old_snapshots "$stage" "$keep"
     trap - RETURN
 
     echo "gsr-backup: verified backup of $BACKUP_ENVIRONMENT is now current."
-    [[ -z "$current_target" ]] || echo "gsr-backup: replaced previous local backup."
+    if (( keep == 1 )); then
+        [[ -z "$current_target" ]] || echo "gsr-backup: replaced previous local backup."
+    else
+        echo "gsr-backup: keeping up to $keep server backups of $BACKUP_ENVIRONMENT (GSR_SERVER_BACKUP_KEEP)."
+    fi
 }
 
 finalize() {
@@ -416,7 +476,8 @@ restore_live_from_snapshot() {
     load_environment "$environment"
     verify_snapshot_environment "$source" "$environment"
 
-    # The automatic stop hook rotates the one server-local snapshot. Protect a
+    # The automatic stop hook rotates server-local snapshots (with the default
+    # GSR_SERVER_BACKUP_KEEP=1, the only one away). Protect a
     # source from that snapshot directory before stopping the service.
     if [[ "$source" == "$SNAPSHOT_DIR"/* ]]; then
         protected_source="$(mktemp -d "$BACKUP_DIR/.restore-source.XXXXXX")"
