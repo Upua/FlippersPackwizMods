@@ -1,0 +1,47 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # A fixed image instead of ubuntu-latest, so a runner upgrade cannot
+    # silently change the shellcheck or Python version. tomllib (used by the
+    # packwiz check) needs Python 3.11 or newer; ubuntu-24.04 ships 3.12.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # Pinned to a tag, not a commit SHA: the SHA could not be looked up
+      # offline when this was written. See REVIEW-ROUND2.md.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install tools
+        run: |
+          if ! command -v shellcheck >/dev/null || ! command -v zstd >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends shellcheck zstd
+          fi
+          bash --version | head -n1
+          shellcheck --version | sed -n 2p
+          python3 --version
+
+      - name: bash -n on every shell script
+        run: tests/list-files.sh shell | xargs -0 -n1 bash -n
+
+      - name: shellcheck (severity warning)
+        run: tests/list-files.sh shell | xargs -0 shellcheck --severity=warning
+
+      - name: py_compile on every Python file
+        run: tests/list-files.sh python | PYTHONPYCACHEPREFIX="$RUNNER_TEMP/pycache" xargs -0 python3 -m py_compile
+
+      - name: Offline packwiz hash check
+        run: python3 tests/check-packwiz.py
+
+      - name: Offline tests
+        run: tests/run.sh

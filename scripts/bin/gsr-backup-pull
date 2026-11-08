@@ -317,6 +317,8 @@ rotate_snapshots() {
     mapfile -t old < <(find "$snapshots" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -r | tail -n +$((RETENTION + 1)))
     for old_id in "${old[@]}"; do
         [[ "$old_id" == "$new_id" ]] && continue
+        # $snapshots always ends in /snapshots, so this never expands to /.
+        # shellcheck disable=SC2115
         rm -rf -- "$snapshots/$old_id"
     done
 }
