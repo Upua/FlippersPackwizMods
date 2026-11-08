@@ -198,10 +198,13 @@ that must be investigated before any manual migration.
   or systemd first runs `save-all flush` over RCON (`ExecStop`), then, once the
   container has stopped, exports the whole `/data` volume (`ExecStopPost`).
   If the flush fails or the environment was not running, no backup is made and
-  the previous one stays current. The same applies when systemd reports an
-  abnormal stop (`timeout`, `exit-code`, a core dump, ...): only the results
-  `success` and `signal` (normal under Quadlet, which removes the container
-  with `podman rm -f`) count as a clean stop. `gsr backup create` does the same for an
+  the previous one stays current. The same applies when systemd reports a
+  stop that may have been cut off mid-save (`timeout`, `core-dump`,
+  `watchdog`, `oom-kill`); the hook says so on stderr, which the journal
+  records. Every other result (`success`, `signal`, which is normal under
+  Quadlet as it removes the container with `podman rm -f`, `exit-code`, e.g.
+  Java exiting 143 on SIGTERM, or anything else) still exports a backup and
+  logs one line naming the result. `gsr backup create` does the same for an
   environment that is already stopped. `podman stop` bypasses all of this.
 - **What is checked.** A new archive becomes `current` only after its sha256,
   `zstd -t`, a full tar listing and its manifest pass, and after it has been

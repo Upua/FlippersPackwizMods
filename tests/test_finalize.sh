@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # gsr-backup prepare/finalize (the systemd stop hooks): finalize exports and
-# rotates only after a clean stop. systemd results `success` and `signal`
-# (normal under Quadlet, which ends the container with `podman rm -f`) are
-# clean; `timeout` and every other result keep the previous backup (round 3,
-# Astra #3). An invalid retention setting must not stop a hook backup.
+# refuses to rotate only for systemd results that mean the shutdown may have
+# been cut off mid-save (timeout, core-dump, watchdog, oom-kill); every other
+# result (success, signal, exit-code, unknown) exports as before, and names
+# the result when it is not success (round 5 refuse-list, replacing the
+# round 3 allow-list). An invalid retention setting must not stop a hook backup.
 . "$(dirname "$0")/lib.sh"
 
 install_script scripts/bin/gsr-backup
@@ -23,20 +24,21 @@ stop_with() {
     SERVICE_RESULT="$1" "$gsr_backup" finalize test > "$WORK/finalize.out" 2> "$WORK/finalize.err"
 }
 
-for result in success signal; do
+for result in success signal exit-code some-future-result; do
     before="$(readlink -e "$bk/current")"
     echo "after-$result" > "$VOLUMES/testdata/server.properties"
     stop_with "$result"; rc=$?
     after="$(readlink -e "$bk/current")"
     if ((rc == 0)) && [[ "$after" != "$before" ]] && "$gsr_backup" verify test >/dev/null 2>&1 \
-        && zstd -dcq "$after/volume.tar.zst" | tar -xOf - ./server.properties | grep -qx "after-$result"; then
+        && zstd -dcq "$after/volume.tar.zst" | tar -xOf - ./server.properties | grep -qx "after-$result" \
+        && { [[ "$result" == success ]] || [[ "$(grep -c "systemd result '$result'" "$WORK/finalize.out")" == 1 ]]; }; then
         ok "SERVICE_RESULT=$result: finalize exports a new current backup"
     else
         ko "SERVICE_RESULT=$result (rc=$rc): $(cat "$WORK/finalize.out" "$WORK/finalize.err")"
     fi
 done
 
-for result in timeout exit-code core-dump oom-kill; do
+for result in timeout core-dump watchdog oom-kill; do
     before="$(readlink -e "$bk/current")"
     snapshots_before="$(ls "$bk/snapshots")"
     : > "$WORK/podman.log"
@@ -44,7 +46,7 @@ for result in timeout exit-code core-dump oom-kill; do
     stop_with "$result"; rc=$?
     if ((rc == 0)) && [[ "$(readlink -e "$bk/current")" == "$before" && "$(ls "$bk/snapshots")" == "$snapshots_before" ]] \
         && ! grep -q 'volume export' "$WORK/podman.log" \
-        && grep -q "stopped abnormally (systemd result '$result').*previous backup kept" "$WORK/finalize.err"; then
+        && grep -q "WARNING.*stopped abnormally (systemd result '$result').*previous backup kept" "$WORK/finalize.err"; then
         ok "SERVICE_RESULT=$result: finalize keeps the previous backup and says why"
     else
         ko "SERVICE_RESULT=$result (rc=$rc): $(cat "$WORK/finalize.out" "$WORK/finalize.err")"

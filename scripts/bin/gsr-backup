@@ -470,22 +470,22 @@ finalize() {
         return 0
     fi
 
-    # Quadlet's generated stop path ends the container through `podman rm -f`.
-    # systemd can therefore report `signal` for an intentional, clean stop.
-    # Any other result (timeout, exit-code, core-dump, watchdog, oom-kill, ...)
-    # means the server may have written again after the flush and then been
-    # killed, so the volume can be inconsistent even though the archive would
-    # pass every integrity check. Such a stop must not rotate away the
-    # previous backup. Without SERVICE_RESULT (run by hand) it counts as
-    # success, as before.
+    # Refuse-list (round 5): only results that mean the shutdown may have been
+    # cut off mid-save (timeout, core-dump, watchdog, oom-kill) keep the
+    # previous backup; the server may have written again after the flush and
+    # then been killed, so the volume can be inconsistent even though the
+    # archive would pass every integrity check. Every other result exports as
+    # before: `signal` is normal under Quadlet (`podman rm -f`), `exit-code`
+    # can be Java exiting 143 on SIGTERM, and an unknown result must not
+    # silently skip every stop backup. Unset (run by hand) counts as success.
     case "${SERVICE_RESULT:-success}" in
-        success) ;;
-        signal)
-            echo "gsr-backup: $BACKUP_ENVIRONMENT stopped with systemd result signal after clean flush (normal for Quadlet); exporting backup."
-            ;;
-        *)
-            echo "gsr-backup: $BACKUP_ENVIRONMENT stopped abnormally (systemd result '$SERVICE_RESULT'); no backup exported, previous backup kept." >&2
+        timeout|core-dump|watchdog|oom-kill)
+            echo "gsr-backup: WARNING: $BACKUP_ENVIRONMENT stopped abnormally (systemd result '$SERVICE_RESULT'), the shutdown may have been cut off mid-save; no backup exported, previous backup kept." >&2
             return 0
+            ;;
+        success) ;;
+        *)
+            echo "gsr-backup: $BACKUP_ENVIRONMENT stopped with systemd result '$SERVICE_RESULT' after a clean flush; exporting backup."
             ;;
     esac
 
