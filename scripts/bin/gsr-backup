@@ -291,6 +291,9 @@ create_backup() {
     copy_shared_identity_source "$stage/shared"
     write_manifest "$stage/manifest.json" "volume.tar.zst" "$digest" "$archive_size" "$created_at"
     verify_snapshot "$stage"
+    # Make the new archive durable before the previous one is deleted, so a
+    # power loss right after rotation cannot leave only an unflushed archive.
+    sync -- "$archive" "$archive.sha256" "$stage/manifest.json" "$stage"
 
     current_target="$(readlink -e "$BACKUP_DIR/current" 2>/dev/null || true)"
     mv "$stage" "$SNAPSHOT_DIR/$snapshot_id"
@@ -300,6 +303,7 @@ create_backup() {
     # then point current at that old, soon-deleted snapshot).
     ln -sfnT "snapshots/$snapshot_id" "$BACKUP_DIR/.current.new"
     mv -Tf "$BACKUP_DIR/.current.new" "$BACKUP_DIR/current"
+    sync -- "$SNAPSHOT_DIR" "$BACKUP_DIR"
     remove_old_snapshots "$stage"
     trap - RETURN
 
