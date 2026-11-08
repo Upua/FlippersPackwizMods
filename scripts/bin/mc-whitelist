@@ -57,7 +57,13 @@ active_container() {
     echo "More than one Minecraft environment is running; refusing to choose one." >&2
     exit 1
   fi
-  ((${#running[@]} == 1)) && printf '%s\n' "${running[0]}"
+  # "No environment running" is a normal result (empty output, status 0).
+  # A bare `(( )) && printf` would return 1 here and, through set -e on the
+  # caller's assignment, abort `add`/`remove`/`apply` without a message.
+  if ((${#running[@]} == 1)); then
+    printf '%s\n' "${running[0]}"
+  fi
+  return 0
 }
 
 sync_start() {
