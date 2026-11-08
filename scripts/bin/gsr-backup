@@ -11,9 +11,12 @@ MARKER_ROOT="$STATE_HOME/gsr/backup-prepared"
 RESTORE_SOURCE_STAGE=""
 RESTORE_INCOMING_STAGE=""
 TEST_VOLUME=""
+RESTORE_SOURCE_KEPT=""
 
 cleanup_restore_staging() {
     [[ -z "$RESTORE_SOURCE_STAGE" ]] || rm -rf -- "$RESTORE_SOURCE_STAGE"
+    [[ -z "$RESTORE_SOURCE_KEPT" ]] || \
+        echo "gsr-backup: restore did not complete; its source backup was kept at $RESTORE_SOURCE_KEPT (delete it manually once no longer needed)." >&2
     [[ -z "$RESTORE_INCOMING_STAGE" ]] || rm -rf -- "$RESTORE_INCOMING_STAGE"
     [[ -z "$TEST_VOLUME" ]] || podman volume rm "$TEST_VOLUME" >/dev/null 2>&1 || true
 }
@@ -440,6 +443,13 @@ restore_live_from_snapshot() {
         create_backup false
     fi
     pre_restore="$(current_snapshot)"
+    # The stop hook has now rotated the old server snapshot away, so the
+    # protected copy can be the only remaining copy of the restore source.
+    # From here on a failure must keep it instead of deleting it on exit.
+    if [[ -n "$protected_source" ]]; then
+        RESTORE_SOURCE_STAGE=""
+        RESTORE_SOURCE_KEPT="$protected_source"
+    fi
 
     echo "gsr-backup: replacing live volume $BACKUP_VOLUME from the verified backup ..."
     podman volume rm "$BACKUP_VOLUME"
@@ -459,6 +469,7 @@ restore_live_from_snapshot() {
     systemctl --user start "$BACKUP_SERVICE.service"
     [[ -z "$protected_source" ]] || rm -rf -- "$protected_source"
     RESTORE_SOURCE_STAGE=""
+    RESTORE_SOURCE_KEPT=""
     echo "gsr-backup: $BACKUP_ENVIRONMENT now runs from the restored volume."
     echo "gsr-backup: the current server backup is the pre-restore rollback point."
 }
