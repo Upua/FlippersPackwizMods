@@ -4,6 +4,7 @@ Description=Skyblock
 [Container]
 Image=skyblock.build
 ContainerName=skyblock
+StopTimeout=180
 PublishPort=25565:25565/tcp
 
 Environment=EULA=TRUE
