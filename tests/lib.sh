@@ -68,6 +68,7 @@ EOF
 #   $WORK/running          exists -> the container reports Running=true
 #   $WORK/import-failures  holds N -> the next N `volume import`s fail
 #   $WORK/export-delay     holds S -> each `volume export` first sleeps S s
+#   $WORK/import-delay     holds S -> each `volume import` first sleeps S s
 #   $WORK/exec-fails       exists -> `podman exec` (the RCON flush) fails
 # `podman exec` otherwise succeeds without doing anything.
 # Every call is appended to $WORK/podman.log.
@@ -89,6 +90,7 @@ case "$1 ${2:-}" in
         tar -C "$volumes/$3" -cf - . ;;
     "exec "*) [[ ! -e "$work/exec-fails" ]] ;;
     "volume import")
+        sleep "$(cat "$work/import-delay" 2>/dev/null || echo 0)"
         failures="$(cat "$work/import-failures" 2>/dev/null || echo 0)"
         if ((failures > 0)); then
             cat > /dev/null
@@ -133,6 +135,8 @@ EOF
 #   $WORK/service-result        holds the SERVICE_RESULT for finalize
 #                               (default success)
 #   $WORK/stop-fails-after-hooks exists -> stop fails after both hooks ran
+#   $WORK/start-delay           holds S -> start sleeps S s before the
+#                               service is active and running (a slow start)
 # Hook output goes to $WORK/hooks.log, calls to $WORK/systemctl.log.
 install_hooked_systemctl() {
     cat > "$FAKE_BIN/systemctl" <<EOF
@@ -161,6 +165,7 @@ if [[ "$args" == *" stop test.service "* ]]; then
     exit 0
 fi
 if [[ "$args" == *" start test.service "* ]]; then
+    sleep "$(cat "$work/start-delay" 2>/dev/null || echo 0)"
     touch "$work/active" "$work/running"
     exit 0
 fi

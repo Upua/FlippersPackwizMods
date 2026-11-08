@@ -8,7 +8,9 @@
 install_script scripts/bin/gsr-backup
 write_test_environment
 install_fake_podman
-install_fake_systemctl
+# The stateful mock (round 6): `stop` runs the real hooks, `start` marks the
+# service active and the container running, as the real unit does.
+install_hooked_systemctl
 gsr_backup="$REPO/scripts/bin/gsr-backup"
 bk="$XDG_DATA_HOME/gsr/backups/test"
 mkdir -p "$VOLUMES/testdata" "$XDG_CONFIG_HOME/gsr"
@@ -48,25 +50,70 @@ fi
 # Normally b waits for a; on a slow machine a may start second and wait.
 check "the waiting create says so" grep -q 'waiting for another backup or restore' "$WORK/a.log" "$WORK/b.log"
 
-# A create that starts during a restore-server waits for it and cannot
-# rotate the restore's rollback point away in the middle.
+# wait_for_log <file> <text>: wait (up to 30 s) until <file> contains <text>.
+wait_for_log() {
+    local tries=0
+    until grep -q "$2" "$1" 2>/dev/null; do
+        ((tries++ < 300)) || return 1
+        sleep 0.1
+    done
+}
+
+# restore_with_waiting_create <name> <text in restore.log while it holds the
+# lock>: runs restore-server, starts a create once the restore holds the lock
+# and waits for both. `systemctl start` takes 1 s (start-delay).
+restore_with_waiting_create() {
+    local name="$1" marker="$2" pid_r pid_c
+    rm -f "$WORK/podman.log"
+    echo 1 > "$WORK/start-delay"
+    echo RESTORE-test | timeout 60 "$gsr_backup" restore-server test > "$WORK/$name-restore.log" 2>&1 &
+    pid_r=$!
+    wait_for_log "$WORK/$name-restore.log" "$marker" || ko "$name: restore never logged '$marker'"
+    timeout 60 "$gsr_backup" create test > "$WORK/$name-create.log" 2>&1 &
+    pid_c=$!
+    wait "$pid_r"; rc_r=$?
+    wait "$pid_c"; rc_c=$?
+    rm -f "$WORK/start-delay" "$WORK/export-delay" "$WORK/import-delay"
+}
+
+# expect_create_refused <name> <description>: the restore succeeded and the
+# service runs; the create waited for the whole restore, including
+# `systemctl start`, then saw the running container and refused without
+# exporting (round 6, Astra-2 #1/#2). Before, the restore released the lock
+# before `systemctl start`, and the waiting create exported from a container
+# that was being started.
+expect_create_refused() {
+    local name="$1" description="$2"
+    if ((rc_r == 0 && rc_c != 0)) && grep -q 'waiting for another backup or restore' "$WORK/$name-create.log" \
+        && grep -q 'test is still running; stop it before using create' "$WORK/$name-create.log" \
+        && ! grep -q 'exporting' "$WORK/$name-create.log" \
+        && [[ -e "$WORK/active" && -e "$WORK/running" ]] \
+        && "$gsr_backup" verify test >/dev/null 2>&1; then
+        ok "$description"
+    else
+        ko "$description (rc_r=$rc_r rc_c=$rc_c): $(cat "$WORK/$name-restore.log" "$WORK/$name-create.log")"
+    fi
+}
+
+# A create that starts during a restore-server of a STOPPED service (the
+# restore makes the rollback backup itself; each export takes 2 s).
 printf 'GSR_SERVER_BACKUP_KEEP=1\n' > "$XDG_CONFIG_HOME/gsr/backup.conf"
 echo before-restore > "$VOLUMES/testdata/server.properties"
+rm -f "$WORK/active" "$WORK/running"
 echo 2 > "$WORK/export-delay"
-echo RESTORE-test | timeout 60 "$gsr_backup" restore-server test > "$WORK/restore.log" 2>&1 &
-pid_r=$!
-sleep 0.5
-timeout 60 "$gsr_backup" create test > "$WORK/c.log" 2>&1 &
-pid_c=$!
-wait "$pid_r"; rc_r=$?
-wait "$pid_c"; rc_c=$?
-rm -f "$WORK/export-delay"
-if ((rc_r == 0 && rc_c == 0)) && grep -q 'waiting for another backup or restore' "$WORK/c.log" "$WORK/restore.log" \
-    && "$gsr_backup" verify test >/dev/null 2>&1; then
-    ok "a create during restore-server waits, and both succeed"
-else
-    ko "create during restore: rc_r=$rc_r rc_c=$rc_c: $(cat "$WORK/restore.log" "$WORK/c.log")"
-fi
+restore_with_waiting_create stopped 'exporting testdata'
+expect_create_refused stopped "stopped service: a create during restore-server waits through systemctl start, then refuses the running container without exporting"
+
+# The same for a RUNNING service: the lock is released for `systemctl stop`
+# (its stop hook takes it), re-acquired after the stop and held through the
+# import and `systemctl start`. The create starts while the import (2 s) runs.
+rm -f "$WORK/hooks.log"
+touch "$WORK/active" "$WORK/running"
+echo 2 > "$WORK/import-delay"
+restore_with_waiting_create running 'replacing live volume'
+expect_create_refused running "running service: a create during restore-server waits through systemctl start, then refuses the running container without exporting"
+check "running service: the stop hook made the rollback backup (no deadlock)" grep -q 'verified backup of test is now current' "$WORK/hooks.log"
+rm -f "$WORK/active" "$WORK/running"
 
 # The lock is released when gsr-backup ends, also after a failure.
 echo 1 > "$WORK/import-failures"

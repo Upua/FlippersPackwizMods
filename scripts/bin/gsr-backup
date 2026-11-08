@@ -111,7 +111,9 @@ podman() {
 # writers (a manual create and a stop hook, two creates, a create during a
 # restore) cannot delete each other's staging directories or snapshots. Only
 # this process holds it: it is released by release_backup_lock or on exit.
-# Never hold it across `systemctl stop/start`: the stop hooks take it too.
+# Never hold it across `systemctl stop`: its stop hooks take it too.
+# `systemctl start` runs no stop hook, so a restore holds it through the
+# start, and no waiting create can export a container that is being started.
 # $1 (optional) says what giving up leaves behind; the default is only true
 # when nothing has been done yet.
 acquire_backup_lock() {
@@ -333,8 +335,15 @@ keep_setting_invalid() {
 server_backup_keep() {
     local line value="" found=false line_number=0
 
-    if [[ ! -e "$BACKUP_CONFIG" ]]; then
+    # Only a missing entry means "no config". A dangling symlink is a config
+    # the owner made whose target is gone: invalid, not the default (keep=1
+    # would delete the snapshots a keep=3 file was keeping).
+    if [[ ! -e "$BACKUP_CONFIG" && ! -L "$BACKUP_CONFIG" ]]; then
         printf '%s\n' "$DEFAULT_SERVER_BACKUP_KEEP"
+        return 0
+    fi
+    if [[ -L "$BACKUP_CONFIG" && ! -e "$BACKUP_CONFIG" ]]; then
+        keep_setting_invalid "cannot read $BACKUP_CONFIG: it is a dangling symlink (its target $(readlink "$BACKUP_CONFIG") does not exist)"
         return 0
     fi
     [[ -f "$BACKUP_CONFIG" && -r "$BACKUP_CONFIG" ]] || {
@@ -427,9 +436,11 @@ create_backup() {
     copy_shared_identity_source "$stage/shared"
     write_manifest "$stage/manifest.json" "volume.tar.zst" "$digest" "$archive_size" "$created_at"
     verify_snapshot "$stage"
-    # Make the new archive durable before the previous one is deleted, so a
-    # power loss right after rotation cannot leave only an unflushed archive.
-    sync -- "$archive" "$archive.sha256" "$stage/manifest.json" "$stage"
+    # Make the new snapshot durable before the previous one is deleted, so a
+    # power loss right after rotation cannot leave only unflushed data. Every
+    # regular file and directory (shared/ and its identity files too) is
+    # synced itself: syncing a directory does not flush its children.
+    find "$stage" \( -type f -o -type d \) -exec sync -- {} +
 
     current_target="$(readlink -e "$BACKUP_DIR/current" 2>/dev/null || true)"
     mv "$stage" "$SNAPSHOT_DIR/$snapshot_id"
@@ -569,9 +580,11 @@ restore_live_from_snapshot() {
     local environment="$1" source="$2" protected_source="" pre_restore current_before current_after
 
     load_environment "$environment"
-    # Held while the source is checked and copied, and again from after the
-    # stop until the import is done; never across systemctl stop/start, whose
-    # stop hooks take it themselves.
+    # Held while the source is checked and copied, released for systemctl
+    # stop (whose stop hooks take it themselves), and re-acquired right after
+    # the stop and held through the import and systemctl start until the
+    # service runs: a waiting create must not export the volume between the
+    # stop and the start (start runs no stop hook, so this cannot deadlock).
     acquire_backup_lock
     verify_snapshot_environment "$source" "$environment"
 
@@ -632,8 +645,13 @@ restore_live_from_snapshot() {
         return 1
     fi
 
+    # Still holding the lock: see the comment at acquire_backup_lock above.
+    # A start that fails runs ExecStopPost (finalize), which takes the lock
+    # only for a prepared stop: drop any stale marker so it cannot wait for
+    # this process (the stop above, if any, has already consumed it).
+    rm -f "$MARKER_FILE"
+    systemctl --user start "$BACKUP_SERVICE.service" {BACKUP_LOCK_FD}>&-
     release_backup_lock
-    systemctl --user start "$BACKUP_SERVICE.service"
     [[ -z "$protected_source" ]] || rm -rf -- "$protected_source"
     RESTORE_SOURCE_STAGE=""
     RESTORE_SOURCE_KEPT=""

@@ -123,6 +123,20 @@ else
 fi
 rmdir "$conf"
 
+# A dangling symlink (round 6, Astra-2 #3): the owner's keep=3 file is a
+# link whose target has gone missing. That is an unreadable setting, not "no
+# config": the default keep=1 would delete every older snapshot.
+seed
+ln -s "$WORK/missing/backup.conf" "$conf"
+if "$gsr_backup" create test > "$WORK/create.out" 2> "$WORK/create.err" \
+    && [[ "$(remaining)" == ".staging.leftover ${OLD_IDS[*]} $(current_id) " ]] \
+    && grep -q "WARNING: .*$conf.*dangling symlink.*PAUSED" "$WORK/create.err"; then
+    ok "dangling symlink as backup.conf warns, backs up and deletes nothing"
+else
+    ko "dangling symlink backup.conf: remaining=$(remaining): $(cat "$WORK/create.out" "$WORK/create.err")"
+fi
+rm -f "$conf"
+
 # The owner's case (round 4): keep=3 was working, then a typo is made in the
 # file. The next backups must not delete any of the snapshots kept so far.
 seed
