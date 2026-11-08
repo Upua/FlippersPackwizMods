@@ -62,13 +62,15 @@ else
     ko "finalize without SERVICE_RESULT: $(cat "$WORK/finalize.out")"
 fi
 
-# An invalid retention setting warns but the stop backup is still made.
+# An invalid retention setting warns but the stop backup is still made, and
+# the previous one is not deleted (rotation paused, round 4).
 mkdir -p "$XDG_CONFIG_HOME/gsr"
 printf 'GSR_SERVER_BACKUP_KEEP=three\n' > "$XDG_CONFIG_HOME/gsr/backup.conf"
 before="$(readlink -e "$bk/current")"
 stop_with success; rc=$?
-if ((rc == 0)) && [[ "$(readlink -e "$bk/current")" != "$before" ]] && grep -q "WARNING.*'three'" "$WORK/finalize.err"; then
-    ok "invalid retention setting: the stop-hook backup is still made, with a warning"
+if ((rc == 0)) && [[ "$(readlink -e "$bk/current")" != "$before" && -d "$before" ]] \
+    && grep -q "WARNING.*'three'.*PAUSED" "$WORK/finalize.err"; then
+    ok "invalid retention setting: the stop-hook backup is still made, the previous one kept, with a warning"
 else
     ko "invalid retention in finalize (rc=$rc): $(cat "$WORK/finalize.out" "$WORK/finalize.err")"
 fi

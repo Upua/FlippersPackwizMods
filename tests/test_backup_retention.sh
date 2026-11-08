@@ -77,9 +77,11 @@ run_create "keep=3 first backup"
 run_create "keep=3 second backup"
 check "keep=3 with two backups keeps both" [ "$(remaining | wc -w)" -eq 2 ]
 
-# Invalid settings never stop a backup (round 3, owner rule): the backup is
-# made with the default (keep 1) and a warning on stderr names the file and
-# the bad value. stdout and stderr are captured separately to check that.
+# Invalid settings never stop a backup and never delete anything (round 4,
+# owner rule): the backup is made, rotation is paused (every seeded snapshot
+# and even the staging leftover stay), and a warning on stderr names the
+# file, the bad value and the pause. stdout and stderr are captured
+# separately to check that.
 # Each entry: <config line>|<text the warning must quote>.
 for case in 'GSR_SERVER_BACKUP_KEEP=0|0' 'GSR_SERVER_BACKUP_KEEP=abc|abc' \
     'GSR_SERVER_BACKUP_KEEP=1000|1000' "GSR_SERVER_BACKUP_KEEP=|''" \
@@ -92,30 +94,55 @@ for case in 'GSR_SERVER_BACKUP_KEEP=0|0' 'GSR_SERVER_BACKUP_KEEP=abc|abc' \
         continue
     fi
     id="$(current_id)"
-    if [[ " ${OLD_IDS[*]} " != *" $id "* && "$(remaining)" == "$id " ]] \
+    if [[ " ${OLD_IDS[*]} " != *" $id "* && "$(remaining)" == ".staging.leftover ${OLD_IDS[*]} $id " ]] \
         && "$gsr_backup" verify test >/dev/null 2>&1; then
-        ok "invalid '$bad' still backs up, with the default retention (1)"
+        ok "invalid '$bad' still backs up and deletes nothing"
     else
         ko "invalid '$bad': current=$id remaining=$(remaining)"
     fi
     if grep -q 'WARNING' "$WORK/create.err" && grep -qF "$conf" "$WORK/create.err" \
-        && grep -qF "$quoted" "$WORK/create.err" && ! grep -q 'WARNING' "$WORK/create.out"; then
-        ok "invalid '$bad' warns on stderr, naming the file and the bad value"
+        && grep -qF "$quoted" "$WORK/create.err" && grep -q 'Rotation of server backups is PAUSED' "$WORK/create.err" \
+        && grep -q 'no older backup was deleted' "$WORK/create.err" \
+        && ! grep -q 'WARNING' "$WORK/create.out" && ! grep -q 'replaced previous' "$WORK/create.out"; then
+        ok "invalid '$bad' warns on stderr, naming the file, the bad value and the pause"
     else
         ko "invalid '$bad': no proper warning: stderr=$(cat "$WORK/create.err")"
     fi
 done
 
-# An unreadable backup.conf (here: a directory) also falls back with a warning.
+# An unreadable backup.conf (here: a directory) also pauses rotation.
 seed
 rm -f "$conf"
 mkdir "$conf"
 if "$gsr_backup" create test > "$WORK/create.out" 2> "$WORK/create.err" \
-    && [[ "$(remaining)" == "$(current_id) " ]] && grep -q "WARNING: cannot read $conf" "$WORK/create.err"; then
-    ok "unreadable backup.conf warns and backs up with the default"
+    && [[ "$(remaining)" == ".staging.leftover ${OLD_IDS[*]} $(current_id) " ]] \
+    && grep -q "WARNING: cannot read $conf.*PAUSED" "$WORK/create.err"; then
+    ok "unreadable backup.conf warns, backs up and deletes nothing"
 else
     ko "unreadable backup.conf: $(cat "$WORK/create.out" "$WORK/create.err")"
 fi
 rmdir "$conf"
+
+# The owner's case (round 4): keep=3 was working, then a typo is made in the
+# file. The next backups must not delete any of the snapshots kept so far.
+seed
+printf 'GSR_SERVER_BACKUP_KEEP=3\n' > "$conf"
+run_create "keep=3 before the typo"
+before_typo="$(remaining)"
+for typo in 'GSR_SERVER_BACKUP_KEEP=3O' 'GSR_SERVER_BACKUP_KEPP=3'; do
+    printf '%s\n' "$typo" > "$conf"
+    previous="$(remaining)"
+    if "$gsr_backup" create test > "$WORK/create.out" 2> "$WORK/create.err" \
+        && [[ "$(remaining)" == *"$(current_id) "* ]] \
+        && (($(remaining | wc -w) == $(printf '%s' "$previous" | wc -w) + 1)); then
+        missing=""
+        for id in $before_typo; do [[ -d "$bk/snapshots/$id" ]] || missing+=" $id"; done
+        if [[ -z "$missing" ]]; then ok "typo '$typo' after keep=3: backup made, nothing deleted"
+        else ko "typo '$typo' after keep=3 deleted:$missing"; fi
+    else
+        ko "typo '$typo' after keep=3: before=[$previous] after=[$(remaining)]: $(cat "$WORK/create.out" "$WORK/create.err")"
+    fi
+done
+rm -f "$conf"
 
 finish

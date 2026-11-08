@@ -80,4 +80,38 @@ else
 fi
 rm -f "$XDG_CONFIG_HOME/gsr/backup.conf"
 
+# restore-server on a running environment gives up waiting for the lock
+# AFTER it has stopped the service (round 4). The message must not claim that
+# nothing was changed: the service was stopped and stays stopped. A private
+# copy of the script waits 2 s instead of 600 s, and the fake `systemctl
+# stop` leaves a process holding the lock for 6 s.
+sed 's/^BACKUP_LOCK_WAIT_SECONDS=600$/BACKUP_LOCK_WAIT_SECONDS=2/' "$gsr_backup" > "$WORK/gsr-backup-short"
+grep -q '^BACKUP_LOCK_WAIT_SECONDS=2$' "$WORK/gsr-backup-short" || ko "could not shorten the lock wait"
+cp "$WORK/gsr-backup-short" "$gsr_backup"
+cat > "$FAKE_BIN/systemctl" <<EOF
+#!/usr/bin/env bash
+work="$WORK"
+lock="$bk/.lock"
+EOF
+cat >> "$FAKE_BIN/systemctl" <<'EOF'
+args=" $* "
+if [[ "$args" == *" is-active "* ]]; then [[ -e "$work/active" ]]; exit; fi
+if [[ "$args" == *" stop "* ]]; then
+    rm -f "$work/active" "$work/running" "$work/held"
+    flock "$lock" -c "touch '$work/held'; sleep 6" >/dev/null 2>&1 &
+    while [[ ! -e "$work/held" ]]; do sleep 0.1; done
+fi
+exit 0
+EOF
+chmod +x "$FAKE_BIN/systemctl"
+touch "$WORK/active" "$WORK/running"
+echo RESTORE-test | timeout 60 "$gsr_backup" restore-server test > "$WORK/timeout.log" 2>&1; rc=$?
+if ((rc != 0)) && ! grep -q 'nothing was changed' "$WORK/timeout.log" \
+    && grep -q 'test was stopped for the restore and stays stopped' "$WORK/timeout.log"; then
+    ok "lock timeout after the stop: says the service stays stopped, not 'nothing was changed'"
+else
+    ko "lock timeout after the stop (rc=$rc): $(cat "$WORK/timeout.log")"
+fi
+rm -rf "$bk"/.restore-source.*
+
 finish

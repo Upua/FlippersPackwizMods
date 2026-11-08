@@ -69,21 +69,25 @@ else
     ko "keep=3 restore (rc=$rc, $count_before -> $count_after): $(cat "$WORK/keep3.log")"
 fi
 
-# --- an invalid retention setting only warns (round 3, owner rule): the
-# rollback backup is made with the default retention and the restore runs.
+# --- an invalid retention setting only warns (round 4, owner rule): the
+# rollback backup is made, the restore runs and no snapshot is deleted.
 printf 'GSR_SERVER_BACKUP_KEEP=zero\n' > "$XDG_CONFIG_HOME/gsr/backup.conf"
 echo before-invalid > "$live/server.properties"
 restore_point="$(readlink -e "$bk/current")"
+snapshots_before="$(find "$bk/snapshots" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)"
 expected="$(zstd -dcq "$restore_point/volume.tar.zst" | tar -xOf - ./server.properties)"
 echo RESTORE-test | "$gsr_backup" restore-server test > "$WORK/invalid.out" 2> "$WORK/invalid.err"; rc=$?
 rollback="$(readlink -e "$bk/current")"
 if ((rc == 0)) && [[ "$(cat "$live/server.properties")" == "$expected" ]] \
     && zstd -dcq "$rollback/volume.tar.zst" | tar -xOf - ./server.properties | grep -qx before-invalid \
-    && grep -q "WARNING: GSR_SERVER_BACKUP_KEEP in .*backup.conf .*'zero'" "$WORK/invalid.err"; then
+    && grep -q "WARNING: GSR_SERVER_BACKUP_KEEP in .*backup.conf .*'zero'.*PAUSED" "$WORK/invalid.err"; then
     ok "invalid retention setting: restore-server warns, makes the rollback backup and restores"
 else
     ko "invalid retention restore (rc=$rc): $(cat "$WORK/invalid.out" "$WORK/invalid.err")"
 fi
+missing=""
+for id in $snapshots_before; do [[ -d "$bk/snapshots/$id" ]] || missing+=" $id"; done
+check "invalid retention setting: restore-server deletes no snapshot (missing:${missing:- none})" [ -z "$missing" ]
 rm -f "$XDG_CONFIG_HOME/gsr/backup.conf"
 
 finish

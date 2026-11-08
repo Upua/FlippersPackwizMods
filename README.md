@@ -226,11 +226,15 @@ that must be investigated before any manual migration.
   then removes the oldest snapshots beyond the limit. Without the file, or
   with `GSR_SERVER_BACKUP_KEEP=1`, behaviour is exactly as before. Any other
   content in that file (a typo, `0`, a non-number, an unreadable file) never
-  stops a backup: each backup, including the automatic stop backups, prints a
-  `WARNING` on stderr (in the journal for stop backups) that names the file
-  and the bad value, and keeps only the default of one snapshot. A typo can
-  therefore remove older snapshots you meant to keep: check the output of
-  `gsr backup create <environment>` or the journal after changing it. The `gsr backup` commands only use `current`; older
+  stops a backup and never deletes one: each backup, including the automatic
+  stop backups, is still made, rotation is paused (no older snapshot is
+  removed, whatever the previous setting was), and a `WARNING` on stderr (in
+  the journal for stop backups) names the file and the bad value and says
+  that rotation is paused until the file is fixed. While it is paused every
+  stop adds a full snapshot, so the disk fills up over time: check the output
+  of `gsr backup create <environment>` or the journal after changing the
+  file. The next backup after the fix removes the snapshots beyond the limit.
+  The `gsr backup` commands only use `current`; older
   snapshots are kept under
   `~/.local/share/gsr/backups/<environment>/snapshots/` and are not yet
   selectable by a command.
