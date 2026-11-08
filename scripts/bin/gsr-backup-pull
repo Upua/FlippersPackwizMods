@@ -305,10 +305,11 @@ rotate_snapshots() {
     old_current="$(readlink "$root/current" 2>/dev/null || true)"
     old_id="${old_current#snapshots/}"
 
-    ln -s "snapshots/$new_id" "$root/.current.new"
+    # -fnT: replace (never follow) a link left by an interrupted earlier run.
+    ln -sfnT "snapshots/$new_id" "$root/.current.new"
     mv -Tf "$root/.current.new" "$root/current"
     if [[ "$RETENTION" -ge 2 && "$old_current" == snapshots/* && -d "$snapshots/$old_id" ]]; then
-        ln -s "$old_current" "$root/.previous.new"
+        ln -sfnT "$old_current" "$root/.previous.new"
         mv -Tf "$root/.previous.new" "$root/previous"
     else
         rm -f "$root/previous"

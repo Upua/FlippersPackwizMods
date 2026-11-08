@@ -292,7 +292,10 @@ create_backup() {
     current_target="$(readlink -e "$BACKUP_DIR/current" 2>/dev/null || true)"
     mv "$stage" "$SNAPSHOT_DIR/$snapshot_id"
     stage="$SNAPSHOT_DIR/$snapshot_id"
-    ln -s "snapshots/$snapshot_id" "$BACKUP_DIR/.current.new"
+    # -fnT: a .current.new left by an interrupted run must be replaced, not
+    # followed (plain ln -s would create the link inside the old snapshot and
+    # then point current at that old, soon-deleted snapshot).
+    ln -sfnT "snapshots/$snapshot_id" "$BACKUP_DIR/.current.new"
     mv -Tf "$BACKUP_DIR/.current.new" "$BACKUP_DIR/current"
     remove_old_snapshots "$stage"
     trap - RETURN
