@@ -387,7 +387,9 @@ PY
 
 world_from_server_properties() {
     local archive="$1" entry
-    entry="$(zstd -dcq "$archive" | tar -tf - | awk '{clean=$0; sub(/^\.\//, "", clean); if (clean == "server.properties") {print $0; exit}}')"
+    # No early awk exit: with pipefail, the SIGPIPE it causes upstream would
+    # turn a successful match into a failed pipeline.
+    entry="$(zstd -dcq "$archive" | tar -tf - | awk '{clean=$0; sub(/^\.\//, "", clean); if (clean == "server.properties" && !found) {print $0; found=1}}')"
     [[ -n "$entry" ]] || return 1
     zstd -dcq "$archive" | tar -xOf - "$entry" | sed -nE 's/^level-name=([^[:space:]#]+).*/\1/p' | head -n1
 }
@@ -413,7 +415,7 @@ export_world() {
     # try to seek backwards through a stream and report false missing files.
     zstd -dcq "$archive" | tar -tf - | awk -v world="$world" '
         { clean=$0; sub(/^\.\//, "", clean); sub(/\/$/, "", clean) }
-        clean == world { print $0; exit }
+        clean == world && !found { print $0; found=1 }
     ' > "$entry_list"
     [[ -s "$entry_list" ]] || fail "world directory is not present in the archive: $world"
     if ! zstd -dcq "$archive" | tar -xf - -C "$stage" --verbatim-files-from \

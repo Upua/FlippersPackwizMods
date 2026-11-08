@@ -72,9 +72,11 @@ active_environments() {
 volume_has_properties() {
     local volume="$1"
     podman volume exists "$volume" || return 1
+    # awk reads the whole listing on purpose: an early `exit` closes the pipe,
+    # podman/tar die with SIGPIPE and pipefail turns a found file into failure.
     podman volume export "$volume" 2>/dev/null | tar -tf - 2>/dev/null | awk '
         { path=$0; sub(/^\.\//, "", path) }
-        path == "server.properties" { found=1; exit }
+        path == "server.properties" { found=1 }
         END { exit !found }
     '
 }
@@ -140,8 +142,8 @@ extract_properties() {
     local entry
     entry="$(podman volume export "$TARGET_VOLUME" | tar -tf - | awk '
         { path=$0; sub(/^\.\//, "", path) }
-        path == "server.properties" { print $0; exit }
-    ')"
+        path == "server.properties" && !found { print $0; found=1 }
+    ')"  # no early awk exit: see volume_has_properties (pipefail + SIGPIPE)
     [[ -n "$entry" ]] || { echo "gsr-properties: server.properties disappeared from $TARGET_VOLUME." >&2; return 1; }
     podman volume export "$TARGET_VOLUME" | tar -xOf - "$entry" > "$WORK_DIR/original"
     cp "$WORK_DIR/original" "$WORK_DIR/edited"
