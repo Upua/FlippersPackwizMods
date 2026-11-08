@@ -15,9 +15,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      # Pinned to a tag, not a commit SHA: the SHA could not be looked up
-      # offline when this was written. See REVIEW-ROUND2.md.
-      - uses: actions/checkout@v4
+      # Pinned to a full commit SHA (a tag can be moved); the SHA was checked
+      # by the owner against the GitHub API on 2026-11-08.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 

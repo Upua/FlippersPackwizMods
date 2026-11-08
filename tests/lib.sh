@@ -67,6 +67,9 @@ EOF
 # A fake podman. Volumes are directories under $VOLUMES. Behaviour switches:
 #   $WORK/running          exists -> the container reports Running=true
 #   $WORK/import-failures  holds N -> the next N `volume import`s fail
+#   $WORK/export-delay     holds S -> each `volume export` first sleeps S s
+#   $WORK/exec-fails       exists -> `podman exec` (the RCON flush) fails
+# `podman exec` otherwise succeeds without doing anything.
 # Every call is appended to $WORK/podman.log.
 install_fake_podman() {
     cat > "$FAKE_BIN/podman" <<EOF
@@ -80,7 +83,11 @@ case "$1 ${2:-}" in
     "volume exists") [[ -d "$volumes/$3" ]] ;;
     "volume create") mkdir -p "$volumes/$3" ;;
     "volume rm") [[ -d "$volumes/$3" ]] && rm -rf -- "${volumes:?}/$3" ;;
-    "volume export") tar -C "$volumes/$3" -cf - . ;;
+    "volume export")
+        delay="$(cat "$work/export-delay" 2>/dev/null || echo 0)"
+        sleep "$delay"
+        tar -C "$volumes/$3" -cf - . ;;
+    "exec "*) [[ ! -e "$work/exec-fails" ]] ;;
     "volume import")
         failures="$(cat "$work/import-failures" 2>/dev/null || echo 0)"
         if ((failures > 0)); then
@@ -112,6 +119,50 @@ args=" $* "
 if [[ "$args" == *" is-active "* ]]; then
     [[ -e "$work/active" ]]
     exit
+fi
+exit 0
+EOF
+    chmod +x "$FAKE_BIN/systemctl"
+}
+
+# A fake systemctl that behaves like the real unit for test.service: `stop`
+# runs the real stop hooks (ExecStop=gsr backup prepare, then the container
+# stops, then ExecStopPost=gsr backup finalize with SERVICE_RESULT) and marks
+# the service inactive; `start` marks it active and running. Switches:
+#   $WORK/active                exists -> is-active succeeds
+#   $WORK/service-result        holds the SERVICE_RESULT for finalize
+#                               (default success)
+#   $WORK/stop-fails-after-hooks exists -> stop fails after both hooks ran
+# Hook output goes to $WORK/hooks.log, calls to $WORK/systemctl.log.
+install_hooked_systemctl() {
+    cat > "$FAKE_BIN/systemctl" <<EOF
+#!/usr/bin/env bash
+work="$WORK"
+gsr_backup="$REPO/scripts/bin/gsr-backup"
+EOF
+    cat >> "$FAKE_BIN/systemctl" <<'EOF'
+echo "systemctl $*" >> "$work/systemctl.log"
+args=" $* "
+if [[ "$args" == *" is-active "* ]]; then
+    [[ -e "$work/active" ]]
+    exit
+fi
+if [[ "$args" == *" stop test.service "* ]]; then
+    # The hooks are `-` prefixed in the unit: their failures are ignored.
+    "$gsr_backup" prepare test >> "$work/hooks.log" 2>&1 || true
+    rm -f "$work/running"
+    SERVICE_RESULT="$(cat "$work/service-result" 2>/dev/null || echo success)" \
+        "$gsr_backup" finalize test >> "$work/hooks.log" 2>&1 || true
+    rm -f "$work/active"
+    if [[ -e "$work/stop-fails-after-hooks" ]]; then
+        echo "fake systemctl: stop failed" >&2
+        exit 1
+    fi
+    exit 0
+fi
+if [[ "$args" == *" start test.service "* ]]; then
+    touch "$work/active" "$work/running"
+    exit 0
 fi
 exit 0
 EOF

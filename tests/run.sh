@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Runs every offline test (tests/test_*.sh) and exits non-zero if any fails.
-# Needs bash, coreutils, tar, zstd and python3; no root, network, Podman or
-# systemd. Usage: tests/run.sh [test_name.sh ...]
+# Needs bash, coreutils, tar, zstd, python3 and flock (util-linux); no root,
+# network, Podman or systemd. Usage: tests/run.sh [test_name.sh ...]
 set -uo pipefail
 
 tests_dir="$(cd "$(dirname "$0")" && pwd)"
 missing=()
-for tool in tar zstd python3 sha256sum find sort; do
+for tool in tar zstd python3 sha256sum find sort flock timeout; do
     command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
 done
 if ((${#missing[@]})); then

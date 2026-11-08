@@ -198,11 +198,18 @@ that must be investigated before any manual migration.
   or systemd first runs `save-all flush` over RCON (`ExecStop`), then, once the
   container has stopped, exports the whole `/data` volume (`ExecStopPost`).
   If the flush fails or the environment was not running, no backup is made and
-  the previous one stays current. `gsr backup create` does the same for an
+  the previous one stays current. The same applies when systemd reports an
+  abnormal stop (`timeout`, `exit-code`, a core dump, ...): only the results
+  `success` and `signal` (normal under Quadlet, which removes the container
+  with `podman rm -f`) count as a clean stop. `gsr backup create` does the same for an
   environment that is already stopped. `podman stop` bypasses all of this.
 - **What is checked.** A new archive becomes `current` only after its sha256,
   `zstd -t`, a full tar listing and its manifest pass, and after it has been
-  flushed to disk. Only then are older snapshots removed. Commands that read a
+  flushed to disk. Only then are older snapshots removed. Backups and
+  restores of one environment take a lock
+  (`~/.local/share/gsr/backups/<environment>/.lock`), so a second one waits
+  (up to 10 minutes, with a message) instead of deleting the first one's
+  snapshot; commands that only read a backup do not take it. Commands that read a
   backup (`verify`, `restore`, `restore-server`, and the pull client's
   transfers) check it again first and refuse a damaged one.
 - **How many are kept.** By default one snapshot per environment is kept on
@@ -218,10 +225,12 @@ that must be investigated before any manual migration.
   for that many. The setting is applied at the next successful backup, which
   then removes the oldest snapshots beyond the limit. Without the file, or
   with `GSR_SERVER_BACKUP_KEEP=1`, behaviour is exactly as before. Any other
-  content in that file (a typo, `0`, a non-number) makes every backup,
-  including the automatic stop backups, refuse to run and leave the existing
-  snapshots untouched; check `gsr backup verify <environment>` or the journal
-  after changing it. The `gsr backup` commands only use `current`; older
+  content in that file (a typo, `0`, a non-number, an unreadable file) never
+  stops a backup: each backup, including the automatic stop backups, prints a
+  `WARNING` on stderr (in the journal for stop backups) that names the file
+  and the bad value, and keeps only the default of one snapshot. A typo can
+  therefore remove older snapshots you meant to keep: check the output of
+  `gsr backup create <environment>` or the journal after changing it. The `gsr backup` commands only use `current`; older
   snapshots are kept under
   `~/.local/share/gsr/backups/<environment>/snapshots/` and are not yet
   selectable by a command.
@@ -231,10 +240,13 @@ that must be investigated before any manual migration.
   confirmation and a fresh rollback backup of the live volume. If the import
   fails, the rollback backup is imported again and the environment stays
   stopped. For `gsr backup restore-server` the protected copy of the restore
-  source is then kept and its path printed; for `gsr-backup-pull
+  source is kept and its path printed whenever the restore does not complete
+  (a failed import, but also a failing stop or rollback backup, which may
+  already have rotated the original away); for `gsr-backup-pull
   restore-server` the source remains on the other computer.
 - **Off-server copies.** `scripts/bin/gsr-backup-pull` keeps its own number of
-  complete backups on another computer (see below). With the default server
+  complete backups on another computer (see below). A pulled snapshot is
+  flushed to disk before older local copies are removed. With the default server
   setting it is the only way to keep older backups.
 
 ## Environment backups

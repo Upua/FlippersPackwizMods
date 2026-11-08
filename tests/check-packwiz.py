@@ -17,7 +17,18 @@ import hashlib
 import pathlib
 import re
 import sys
-import tomllib
+
+try:
+    import tomllib
+except ImportError:
+    # tomllib is in the standard library from Python 3.11 on. Say so instead
+    # of failing with a traceback (exit 2: the check could not run).
+    print(
+        "check-packwiz: needs Python 3.11 or newer (for tomllib); this is Python "
+        f"{sys.version.split()[0]}. Run it with a newer python3.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 HEX_LENGTHS = {"sha1": 40, "sha256": 64, "sha512": 128, "md5": 32}

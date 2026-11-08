@@ -77,22 +77,45 @@ run_create "keep=3 first backup"
 run_create "keep=3 second backup"
 check "keep=3 with two backups keeps both" [ "$(remaining | wc -w)" -eq 2 ]
 
-# Invalid settings refuse the backup before exporting and delete nothing.
-for bad in 'GSR_SERVER_BACKUP_KEEP=0' 'GSR_SERVER_BACKUP_KEEP=abc' 'GSR_SERVER_BACKUP_KEEP=1000' \
-    'GSR_SERVER_BACKUP_KEEP=' 'GSR_SERVER_BACKUPS_KEEP=3'; do
+# Invalid settings never stop a backup (round 3, owner rule): the backup is
+# made with the default (keep 1) and a warning on stderr names the file and
+# the bad value. stdout and stderr are captured separately to check that.
+# Each entry: <config line>|<text the warning must quote>.
+for case in 'GSR_SERVER_BACKUP_KEEP=0|0' 'GSR_SERVER_BACKUP_KEEP=abc|abc' \
+    'GSR_SERVER_BACKUP_KEEP=1000|1000' "GSR_SERVER_BACKUP_KEEP=|''" \
+    'GSR_SERVER_BACKUPS_KEEP=3|GSR_SERVER_BACKUPS_KEEP=3'; do
+    bad="${case%%|*}" quoted="${case#*|}"
     seed
-    before="$(remaining)"
     printf '%s\n' "$bad" > "$conf"
-    : > "$WORK/podman.log"
-    if "$gsr_backup" create test > "$WORK/create.log" 2>&1; then
-        ko "invalid '$bad': create succeeded"
-    elif [[ "$(remaining)" == "$before" && "$(current_id)" == "${OLD_IDS[3]}" ]] \
-        && ! grep -q 'volume export' "$WORK/podman.log" \
-        && grep -q 'GSR_SERVER_BACKUP_KEEP' "$WORK/create.log"; then
-        ok "invalid '$bad' refuses the backup and changes nothing"
+    if ! "$gsr_backup" create test > "$WORK/create.out" 2> "$WORK/create.err"; then
+        ko "invalid '$bad': create failed: $(cat "$WORK/create.out" "$WORK/create.err")"
+        continue
+    fi
+    id="$(current_id)"
+    if [[ " ${OLD_IDS[*]} " != *" $id "* && "$(remaining)" == "$id " ]] \
+        && "$gsr_backup" verify test >/dev/null 2>&1; then
+        ok "invalid '$bad' still backs up, with the default retention (1)"
     else
-        ko "invalid '$bad': $(cat "$WORK/create.log")"
+        ko "invalid '$bad': current=$id remaining=$(remaining)"
+    fi
+    if grep -q 'WARNING' "$WORK/create.err" && grep -qF "$conf" "$WORK/create.err" \
+        && grep -qF "$quoted" "$WORK/create.err" && ! grep -q 'WARNING' "$WORK/create.out"; then
+        ok "invalid '$bad' warns on stderr, naming the file and the bad value"
+    else
+        ko "invalid '$bad': no proper warning: stderr=$(cat "$WORK/create.err")"
     fi
 done
+
+# An unreadable backup.conf (here: a directory) also falls back with a warning.
+seed
+rm -f "$conf"
+mkdir "$conf"
+if "$gsr_backup" create test > "$WORK/create.out" 2> "$WORK/create.err" \
+    && [[ "$(remaining)" == "$(current_id) " ]] && grep -q "WARNING: cannot read $conf" "$WORK/create.err"; then
+    ok "unreadable backup.conf warns and backs up with the default"
+else
+    ko "unreadable backup.conf: $(cat "$WORK/create.out" "$WORK/create.err")"
+fi
+rmdir "$conf"
 
 finish

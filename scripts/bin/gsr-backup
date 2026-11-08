@@ -15,6 +15,12 @@ RESTORE_SOURCE_STAGE=""
 RESTORE_INCOMING_STAGE=""
 TEST_VOLUME=""
 RESTORE_SOURCE_KEPT=""
+# File descriptor of the held per-environment lock, empty when not held.
+BACKUP_LOCK_FD=""
+# How long a backup or restore waits for another one of the same environment.
+# It stays below the unit's TimeoutStopSec (900 s), so a waiting stop hook
+# fails with a message instead of being killed.
+BACKUP_LOCK_WAIT_SECONDS=600
 
 cleanup_restore_staging() {
     [[ -z "$RESTORE_SOURCE_STAGE" ]] || rm -rf -- "$RESTORE_SOURCE_STAGE"
@@ -79,6 +85,47 @@ EOF
 fail() {
     echo "gsr-backup: $*" >&2
     return 1
+}
+
+# Podman never inherits the lock descriptor: a long-lived helper it might
+# leave behind (such as the rootless pause process) must not keep holding the
+# lock after this script has exited.
+podman() {
+    if [[ -n "$BACKUP_LOCK_FD" ]]; then
+        command podman "$@" {BACKUP_LOCK_FD}>&-
+    else
+        command podman "$@"
+    fi
+}
+
+# Takes the per-environment lock ($BACKUP_DIR/.lock). Everything that
+# creates, rotates or restores snapshots of one environment holds it, so two
+# writers (a manual create and a stop hook, two creates, a create during a
+# restore) cannot delete each other's staging directories or snapshots. Only
+# this process holds it: it is released by release_backup_lock or on exit.
+# Never hold it across `systemctl stop/start`: the stop hooks take it too.
+acquire_backup_lock() {
+    local lock_file="$BACKUP_DIR/.lock"
+
+    [[ -z "$BACKUP_LOCK_FD" ]] || return 0
+    mkdir -p "$BACKUP_DIR"
+    chmod 700 "$BACKUP_ROOT" "$BACKUP_DIR"
+    exec {BACKUP_LOCK_FD}>>"$lock_file"
+    if ! flock -n "$BACKUP_LOCK_FD"; then
+        echo "gsr-backup: waiting for another backup or restore of $BACKUP_ENVIRONMENT to finish ..." >&2
+        if ! flock -w "$BACKUP_LOCK_WAIT_SECONDS" "$BACKUP_LOCK_FD"; then
+            exec {BACKUP_LOCK_FD}>&-
+            BACKUP_LOCK_FD=""
+            fail "another backup or restore of $BACKUP_ENVIRONMENT still holds $lock_file after ${BACKUP_LOCK_WAIT_SECONDS} s; nothing was changed"
+            return 1
+        fi
+    fi
+}
+
+release_backup_lock() {
+    [[ -n "$BACKUP_LOCK_FD" ]] || return 0
+    exec {BACKUP_LOCK_FD}>&-
+    BACKUP_LOCK_FD=""
 }
 
 environment_file() {
@@ -255,10 +302,20 @@ print(f"{created}\t{value:.2f} {units[index]}")
 PY
 }
 
+# Warns on stderr that the retention setting is unusable and prints the
+# default instead.
+keep_setting_fallback() {
+    echo "gsr-backup: WARNING: $*; using the default GSR_SERVER_BACKUP_KEEP=$DEFAULT_SERVER_BACKUP_KEEP. Fix $BACKUP_CONFIG." >&2
+    printf '%s\n' "$DEFAULT_SERVER_BACKUP_KEEP"
+}
+
 # Prints GSR_SERVER_BACKUP_KEEP from $BACKUP_CONFIG, or the default (1) when
-# the file does not exist. Anything it does not understand is an error rather
-# than a silent fallback, so a typo cannot quietly change what is deleted.
-# Called inside $(...): every failure returns explicitly.
+# the file does not exist. Anything it does not understand produces a loud
+# warning on stderr (naming the file and the bad value) and the default: an
+# invalid setting must never stop the automatic stop-hook backups. Note the
+# cost: with the default of 1, a typo in a larger value removes the older
+# snapshots at the next backup.
+# Called inside $(...): it always succeeds and prints exactly one number.
 server_backup_keep() {
     local line value="" found=false line_number=0
 
@@ -267,8 +324,8 @@ server_backup_keep() {
         return 0
     fi
     [[ -f "$BACKUP_CONFIG" && -r "$BACKUP_CONFIG" ]] || {
-        fail "cannot read $BACKUP_CONFIG"
-        return 1
+        keep_setting_fallback "cannot read $BACKUP_CONFIG"
+        return 0
     }
     while IFS= read -r line || [[ -n "$line" ]]; do
         line_number=$((line_number + 1))
@@ -278,8 +335,8 @@ server_backup_keep() {
             found=true
             value="${BASH_REMATCH[1]}"
         else
-            fail "$BACKUP_CONFIG line $line_number: expected GSR_SERVER_BACKUP_KEEP=<number>"
-            return 1
+            keep_setting_fallback "$BACKUP_CONFIG line $line_number: expected GSR_SERVER_BACKUP_KEEP=<number>, found '$line'"
+            return 0
         fi
     done < "$BACKUP_CONFIG"
 
@@ -288,8 +345,8 @@ server_backup_keep() {
         return 0
     fi
     [[ "$value" =~ ^[1-9][0-9]{0,2}$ ]] || {
-        fail "GSR_SERVER_BACKUP_KEEP in $BACKUP_CONFIG must be a whole number from 1 to 999, not '$value'"
-        return 1
+        keep_setting_fallback "GSR_SERVER_BACKUP_KEEP in $BACKUP_CONFIG must be a whole number from 1 to 999, not '$value'"
+        return 0
     }
     printf '%s\n' "$value"
 }
@@ -314,10 +371,15 @@ remove_old_snapshots() {
 
 create_backup() {
     local allow_running="$1" created_at snapshot_id stage archive digest archive_size current_target keep
+    local took_lock=false
 
-    # Read the retention setting before exporting anything: an invalid value
-    # refuses the backup and leaves every existing snapshot untouched.
-    keep="$(server_backup_keep)" || return 1
+    # A restore calls this while it already holds the lock.
+    if [[ -z "$BACKUP_LOCK_FD" ]]; then
+        acquire_backup_lock
+        took_lock=true
+    fi
+    # An invalid retention setting only warns and falls back to the default.
+    keep="$(server_backup_keep)"
     command -v zstd >/dev/null || fail "zstd is required for backups."
     command -v tar >/dev/null || fail "tar is required for backups."
     podman volume exists "$BACKUP_VOLUME" || fail "Podman volume does not exist: $BACKUP_VOLUME"
@@ -362,6 +424,7 @@ create_backup() {
     sync -- "$SNAPSHOT_DIR" "$BACKUP_DIR"
     remove_old_snapshots "$stage" "$keep"
     trap - RETURN
+    [[ "$took_lock" == false ]] || release_backup_lock
 
     echo "gsr-backup: verified backup of $BACKUP_ENVIRONMENT is now current."
     if (( keep == 1 )); then
@@ -387,12 +450,22 @@ finalize() {
 
     # Quadlet's generated stop path ends the container through `podman rm -f`.
     # systemd can therefore report `signal` for an intentional, clean stop.
-    # The prepared marker is only written after a successful RCON save-all
-    # flush, and a stopped container is verified above, so those are the
-    # relevant safety conditions for exporting the volume.
-    if [[ "${SERVICE_RESULT:-success}" != success ]]; then
-        echo "gsr-backup: $BACKUP_ENVIRONMENT stopped with systemd result ${SERVICE_RESULT:-unknown} after clean flush; exporting backup."
-    fi
+    # Any other result (timeout, exit-code, core-dump, watchdog, oom-kill, ...)
+    # means the server may have written again after the flush and then been
+    # killed, so the volume can be inconsistent even though the archive would
+    # pass every integrity check. Such a stop must not rotate away the
+    # previous backup. Without SERVICE_RESULT (run by hand) it counts as
+    # success, as before.
+    case "${SERVICE_RESULT:-success}" in
+        success) ;;
+        signal)
+            echo "gsr-backup: $BACKUP_ENVIRONMENT stopped with systemd result signal after clean flush (normal for Quadlet); exporting backup."
+            ;;
+        *)
+            echo "gsr-backup: $BACKUP_ENVIRONMENT stopped abnormally (systemd result '$SERVICE_RESULT'); no backup exported, previous backup kept." >&2
+            return 0
+            ;;
+    esac
 
     create_backup true
 }
@@ -474,6 +547,10 @@ restore_live_from_snapshot() {
     local environment="$1" source="$2" protected_source="" pre_restore current_before current_after
 
     load_environment "$environment"
+    # Held while the source is checked and copied, and again from after the
+    # stop until the import is done; never across systemctl stop/start, whose
+    # stop hooks take it themselves.
+    acquire_backup_lock
     verify_snapshot_environment "$source" "$environment"
 
     # The automatic stop hook rotates server-local snapshots (with the default
@@ -481,16 +558,25 @@ restore_live_from_snapshot() {
     # source from that snapshot directory before stopping the service.
     if [[ "$source" == "$SNAPSHOT_DIR"/* ]]; then
         protected_source="$(mktemp -d "$BACKUP_DIR/.restore-source.XXXXXX")"
+        # A partial copy is deleted on failure ...
+        RESTORE_SOURCE_STAGE="$protected_source"
         cp -a "$source/." "$protected_source/"
         source="$protected_source"
+        # ... but a complete one is kept from now on, until the restore has
+        # succeeded: every later step (the stop hook, a failing stop, the
+        # rollback backup) can rotate the original away, and then this copy
+        # is the last one of the requested restore point.
+        RESTORE_SOURCE_STAGE=""
+        RESTORE_SOURCE_KEPT="$protected_source"
     fi
 
-    RESTORE_SOURCE_STAGE="$protected_source"
     current_before="$(readlink -e "$BACKUP_DIR/current" 2>/dev/null || true)"
 
     if systemctl --user is-active --quiet "$BACKUP_SERVICE.service"; then
         echo "gsr-backup: stopping $BACKUP_ENVIRONMENT and creating a rollback backup ..."
+        release_backup_lock
         systemctl --user stop "$BACKUP_SERVICE.service"
+        acquire_backup_lock
     else
         # A stopped service bypasses the stop hook, so make the rollback backup
         # explicitly before modifying the named live volume.
@@ -508,13 +594,6 @@ restore_live_from_snapshot() {
         create_backup false
     fi
     pre_restore="$(current_snapshot)"
-    # The stop hook has now rotated the old server snapshot away, so the
-    # protected copy can be the only remaining copy of the restore source.
-    # From here on a failure must keep it instead of deleting it on exit.
-    if [[ -n "$protected_source" ]]; then
-        RESTORE_SOURCE_STAGE=""
-        RESTORE_SOURCE_KEPT="$protected_source"
-    fi
 
     echo "gsr-backup: replacing live volume $BACKUP_VOLUME from the verified backup ..."
     podman volume rm "$BACKUP_VOLUME"
@@ -531,6 +610,7 @@ restore_live_from_snapshot() {
         return 1
     fi
 
+    release_backup_lock
     systemctl --user start "$BACKUP_SERVICE.service"
     [[ -z "$protected_source" ]] || rm -rf -- "$protected_source"
     RESTORE_SOURCE_STAGE=""

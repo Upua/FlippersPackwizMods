@@ -314,6 +314,9 @@ rotate_snapshots() {
     else
         rm -f "$root/previous"
     fi
+    # Make the renamed snapshot and the new links durable before any older
+    # snapshot is deleted (the files themselves were synced by pull).
+    sync -- "$snapshots" "$root"
     mapfile -t old < <(find "$snapshots" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -r | tail -n +$((RETENTION + 1)))
     for old_id in "${old[@]}"; do
         [[ "$old_id" == "$new_id" ]] && continue
@@ -365,6 +368,11 @@ PY
         fail "server backup changed during transfer; no local backup was stored"
     verify_snapshot "$stage/snapshot"
     rm -f "$stage/manifest.json"
+    # Flush every downloaded file and directory to disk before the snapshot is
+    # published and older local snapshots are rotated away, so a power loss
+    # cannot leave `current` pointing at unwritten data with the older copies
+    # already gone (as gsr-backup does on the server).
+    find "$stage/snapshot" \( -type f -o -type d \) -exec sync -- {} +
 
     new_id="$(date --utc +%Y%m%dT%H%M%SZ)-$(date --utc +%N)"
     snapshot="$snapshots/$new_id"

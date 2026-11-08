@@ -69,15 +69,20 @@ else
     ko "keep=3 restore (rc=$rc, $count_before -> $count_after): $(cat "$WORK/keep3.log")"
 fi
 
-# --- an invalid retention setting stops the restore before the live volume
-# is touched (the rollback backup cannot be made).
+# --- an invalid retention setting only warns (round 3, owner rule): the
+# rollback backup is made with the default retention and the restore runs.
 printf 'GSR_SERVER_BACKUP_KEEP=zero\n' > "$XDG_CONFIG_HOME/gsr/backup.conf"
 echo before-invalid > "$live/server.properties"
-echo RESTORE-test | "$gsr_backup" restore-server test > "$WORK/invalid.log" 2>&1; rc=$?
-if ((rc != 0)) && [[ "$(cat "$live/server.properties")" == before-invalid ]] && grep -q GSR_SERVER_BACKUP_KEEP "$WORK/invalid.log"; then
-    ok "invalid retention setting: restore-server refuses and leaves the live volume alone"
+restore_point="$(readlink -e "$bk/current")"
+expected="$(zstd -dcq "$restore_point/volume.tar.zst" | tar -xOf - ./server.properties)"
+echo RESTORE-test | "$gsr_backup" restore-server test > "$WORK/invalid.out" 2> "$WORK/invalid.err"; rc=$?
+rollback="$(readlink -e "$bk/current")"
+if ((rc == 0)) && [[ "$(cat "$live/server.properties")" == "$expected" ]] \
+    && zstd -dcq "$rollback/volume.tar.zst" | tar -xOf - ./server.properties | grep -qx before-invalid \
+    && grep -q "WARNING: GSR_SERVER_BACKUP_KEEP in .*backup.conf .*'zero'" "$WORK/invalid.err"; then
+    ok "invalid retention setting: restore-server warns, makes the rollback backup and restores"
 else
-    ko "invalid retention restore (rc=$rc): $(cat "$WORK/invalid.log")"
+    ko "invalid retention restore (rc=$rc): $(cat "$WORK/invalid.out" "$WORK/invalid.err")"
 fi
 rm -f "$XDG_CONFIG_HOME/gsr/backup.conf"
 
