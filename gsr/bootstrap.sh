@@ -168,6 +168,20 @@ inside_repo() {
     [[ "$cwd" == "$repo_path" || "$cwd" == "$repo_path"/* ]]
 }
 
+# repo_path comes from `git rev-parse` on whatever the anchor symlink points
+# at. Before an rm -rf, make sure it really is this project's checkout and
+# not, for example, a dotfiles repository rooted at $HOME.
+refuse_unsafe_removal() {
+    local repo_path="$1" resolved home_resolved
+    resolved="$(readlink -f "$repo_path")"
+    home_resolved="$(readlink -f "$HOME")"
+    if [[ -z "$resolved" || "$resolved" == / || "$resolved" == "$home_resolved" ]] || \
+        [[ ! -d "$resolved/$ENVIRONMENTS_DIR" || ! -x "$resolved/$COMMANDS_DIR/gsr" ]]; then
+        echo "Refusing to remove $repo_path: it does not look like a FlippersPackwizMods checkout." >&2
+        exit 1
+    fi
+}
+
 clone_fresh() {
     echo "==> Cloning into $1"
     git clone -b "$BRANCH" "$REPO_URL" "$1"
@@ -195,8 +209,9 @@ update() {
     mapfile -t running_services < <(active_environment_services "$repo_path")
 
     echo "==> Pulling latest changes"
-    if ! git -C "$repo_path" pull; then
-        echo "Pull failed (conflict or dirty tree) — services left untouched." >&2
+    # --ff-only: never create a merge commit or half-merged tree on the server.
+    if ! git -C "$repo_path" pull --ff-only; then
+        echo "Pull failed (diverged history, conflict or dirty tree) — services left untouched." >&2
         return 1
     fi
 
@@ -301,6 +316,7 @@ case "$mode" in
             echo "You're inside $repo_path — cd out before nuking." >&2
             exit 1
         fi
+        refuse_unsafe_removal "$repo_path"
         for service_name in "${running_services[@]}"; do
             systemctl --user stop "$service_name.service"
         done
@@ -318,6 +334,7 @@ d|D)
         echo "You're inside $repo_path — cd out before deleting." >&2
         exit 1
     fi
+    refuse_unsafe_removal "$repo_path"
     for service_name in "${running_services[@]}"; do
         systemctl --user stop "$service_name.service"
     done
